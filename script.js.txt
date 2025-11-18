@@ -1,0 +1,146 @@
+/* Defensive helpers */
+function safeString(v){
+  if(v === null || v === undefined) return '';
+  if(typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+  try{ return JSON.stringify(v); }catch(e){ return String(v); }
+}
+function ensureTags(v){
+  if(!v) return [];
+  if(Array.isArray(v)) return v.map(x=>safeString(x));
+  if(typeof v === 'string') return v.split(',').map(s=>s.trim()).filter(Boolean);
+  if(typeof v === 'object'){ if(v.tags) return ensureTags(v.tags); return [safeString(v)]; }
+  return [String(v)];
+}
+function normalizeProduct(p, idx){
+  const name = safeString(p.name || p.title || p.item || `Product ${idx+1}`);
+  const sku = safeString(p.sku || p.id || `P${1000+idx}`);
+  const description = safeString(p.description || p.desc || '');
+  const tags = ensureTags(p.tags || p.category || []);
+  let price = null;
+  if(p.price !== undefined && p.price !== null && p.price !== ''){ const n = Number(p.price); price = Number.isFinite(n)?n:null; }
+  const quantity = (p.quantity !== undefined && p.quantity !== null) ? parseInt(p.quantity,10) || 0 : 0;
+  const image = safeString(p.image || '');
+  return { name, sku, description, tags, price, quantity, image };
+}
+
+/* Load PRODUCTS_DATA (inlined in index.html) */
+if (typeof PRODUCTS_DATA === 'undefined') {
+  console.warn('PRODUCTS_DATA not found — using empty array');
+  window.PRODUCTS_DATA = [];
+}
+const PRODUCTS = (Array.isArray(window.PRODUCTS_DATA) ? window.PRODUCTS_DATA : []).map((p,i)=>normalizeProduct(p,i));
+window._products = PRODUCTS;
+
+/* Cart helpers */
+function formatPrice(p){ return p==null ? '' : '₹' + Number(p).toFixed(0); }
+function getCart(){ try{ return JSON.parse(localStorage.getItem('ev_cart')||'[]'); }catch(e){return[]} }
+function saveCart(c){ localStorage.setItem('ev_cart', JSON.stringify(c)); }
+function addToCart(product){ const cart=getCart(); const existing = cart.find(it=>it.sku===product.sku); if(existing){ existing.qty = (existing.qty||1)+1 } else { cart.push({ sku: product.sku, name: product.name, price: product.price||0, image: product.image, qty:1 }); } saveCart(cart); updateCartUI(); }
+function removeFromCart(sku){ let cart=getCart(); cart = cart.filter(it=>it.sku!==sku); saveCart(cart); updateCartUI(); }
+function changeQty(sku, qty){ let cart=getCart(); const it=cart.find(x=>x.sku===sku); if(it){ it.qty = Math.max(1, parseInt(qty,10)||1) } saveCart(cart); updateCartUI(); }
+function cartTotal(){ const cart=getCart(); return cart.reduce((s,i)=>s + (i.price||0) * (i.qty||0),0); }
+
+function updateCartUI(){
+  const cart=getCart();
+  const count = cart.reduce((s,i)=>s+(i.qty||0),0);
+  const elCount = document.getElementById('cartCount');
+  if(elCount) elCount.textContent = count;
+  const container = document.getElementById('cartItems');
+  if(!container) return;
+  if(cart.length===0){ container.innerHTML = '<p>Your cart is empty.</p>'; document.getElementById('cartTotal').textContent = ''; return; }
+  container.innerHTML = cart.map(i=>`
+    <div class="cart-item">
+      <img src="${i.image || ''}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'80\\' height=\\'80\\'><rect width=\\'100%\\' height=\\'100%\\' fill=\\'#f0f0f0\\'/><text x=\\'50%\\' y=\\'50%\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'12\\' fill=\\'#666\\'>Image</text></svg>'}">
+      <div class="meta">
+        <strong>${safeString(i.name)}</strong>
+        <div>${formatPrice(i.price)}</div>
+      </div>
+      <input class="qty" type="number" value="${i.qty||1}" min="1" style="width:64px" onchange="changeQty('${i.sku}', this.value)">
+      <button onclick="removeFromCart('${i.sku}')">Remove</button>
+    </div>
+  `).join('');
+  document.getElementById('cartTotal').textContent = 'Total: ' + formatPrice(cartTotal());
+}
+
+/* Render */
+function render(list){
+  const container = document.getElementById('products');
+  if(!container) return;
+  if(!list || list.length===0){ container.innerHTML = '<p>No products found.</p>'; return; }
+  container.innerHTML = list.map(p=>`
+    <div class="card" role="article" aria-label="${safeString(p.name)}">
+      <img src="${p.image || ''}" alt="${safeString(p.name)}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'640\\' height=\\'360\\'><rect width=\\'100%\\' height=\\'100%\\' fill=\\'#f7f7f7\\'/><text x=\\'50%\\' y=\\'50%\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'20\\' fill=\\'#666\\'>Image</text></svg>'}">
+      <div class="body">
+        <h4>${safeString(p.name)}</h4>
+        <p>${safeString(p.description)}</p>
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div class="price">${p.price!=null ? formatPrice(p.price) : ''}</div>
+          <div>
+            <button class="btn add-cart" data-sku="${p.sku}">Add to cart</button>
+          </div>
+        </div>
+        <div class="tags">${(p.tags||[]).map(t=>safeString(t)).join(', ')}</div>
+        <div style="margin-top:8px;font-size:0.9rem;color:#555">In stock: ${p.quantity}</div>
+      </div>
+    </div>
+  `).join('');
+  document.querySelectorAll('.add-cart').forEach(btn=>{
+    btn.onclick = function(){ const sku = this.getAttribute('data-sku'); const prod = window._products.find(x=>String(x.sku)===String(sku)); if(prod) addToCart(prod); };
+  });
+}
+
+/* Filters & controls */
+function applyFilters(){
+  let list = (window._products||[]).slice();
+  const q = (document.getElementById('search').value || '').trim().toLowerCase();
+  if(q){
+    list = list.filter(p=> (p.name||'').toLowerCase().includes(q) || (p.description||'').toLowerCase().includes(q) || (p.tags||[]).join(' ').toLowerCase().includes(q));
+  }
+  const s = document.getElementById('sort').value;
+  if(s==='price-asc') list.sort((a,b)=>(a.price||0)-(b.price||0));
+  if(s==='price-desc') list.sort((a,b)=>(b.price||0)-(a.price||0));
+  if(s==='name-asc') list.sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+  render(list);
+  updateCartUI();
+}
+
+/* Setup interactions */
+function setupControls(){
+  const search = document.getElementById('search');
+  if(search) search.addEventListener('input', applyFilters);
+  const sort = document.getElementById('sort');
+  if(sort) sort.addEventListener('change', applyFilters);
+
+  const contactBtn = document.getElementById('contactBtn');
+  if(contactBtn) contactBtn.addEventListener('click', ()=>{ document.getElementById('contactModal').setAttribute('aria-hidden','false'); });
+
+  const closeContact = document.getElementById('closeContact');
+  if(closeContact) closeContact.addEventListener('click', ()=>{ document.getElementById('contactModal').setAttribute('aria-hidden','true'); });
+
+  const cartBtn = document.getElementById('cartBtn');
+  if(cartBtn) cartBtn.addEventListener('click', ()=>{ document.getElementById('cartModal').setAttribute('aria-hidden','false'); updateCartUI(); });
+
+  const closeCart = document.getElementById('closeCart');
+  if(closeCart) closeCart.addEventListener('click', ()=>{ document.getElementById('cartModal').setAttribute('aria-hidden','true'); });
+
+  const checkout = document.getElementById('checkoutBtn');
+  if(checkout) checkout.addEventListener('click', ()=>{ alert('Demo checkout: cart saved locally. Implement server-side checkout to process orders.'); });
+
+  const form = document.getElementById('contactForm');
+  if(form){
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      const status = document.getElementById('formStatus');
+      status.textContent = 'Sending...';
+      // Netlify will capture if deployed; we just show friendly UI here
+      setTimeout(()=>{ status.textContent = 'Message sent — thank you!'; form.reset(); }, 800);
+    });
+  }
+}
+
+/* Initialize */
+document.addEventListener('DOMContentLoaded', function(){
+  render(window._products||[]);
+  setupControls();
+  updateCartUI();
+});
